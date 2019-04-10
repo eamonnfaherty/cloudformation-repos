@@ -5,6 +5,8 @@ import yaml
 import os
 import json
 import subprocess
+from terminaltables import AsciiTable, SingleTable
+from colorclass import Color
 
 
 logger = logging.getLogger(__file__)
@@ -73,33 +75,49 @@ def add_github_repo(owner, repo):
 @click.argument('what')
 def search(what):
     global_config = get_global_config()
-
-    h = {}
-    if os.environ.get('GITHUB_TOKEN'):
-        h["Authorization"] = "token {}".format(os.environ.get('GITHUB_TOKEN'))
-
+    results = [
+        ['Repo', 'Directory', 'Description']
+    ]
     for uid, config in global_config.get('providers').get('github').items():
-        logger.info("looking at: {}".format(uid))
-        repo_config = config.get('repo').get('config')
-        r = requests.get("https://raw.githubusercontent.com/{owner}/{repo}/master/README.md".format(**repo_config))
-        if r.status_code == 200:
-            logger.info("looking in README.md")
-            pos = r.text.lower().find(what.lower())
-            if pos > -1:
-                offset = 50
-                l = max(0, pos-offset)
-                h = pos+offset
-                result = r.text[l:h].split("\n")[0]
-                click.echo("{} README.md matches: [{}]".format(uid, result))
-        else:
-            raise Exception(r.json().get('message'))
-        r = requests.get('https://api.github.com/repos/{owner}/{repo}/contents/'.format(**repo_config), headers=h)
-        if r.status_code == 200:
-            for f in r.json():
-                if what.lower() in f.get('name').lower():
-                    click.echo("{} matches in filename: {}".format(uid, f.get('name')))
-        else:
-            raise Exception(r.json().get('message'))
+        check_provider_github(uid, config, what, results)
+    table = SingleTable(results)
+    table.title = "Results"
+
+    click.echo(table.table.replace(what, Color("{green}"+what+"{/green}")))
+
+
+def check_provider_github(uid, config, what, results):
+    logger.info("looking at: {}".format(uid))
+
+    headers = {}
+    if os.environ.get('GITHUB_TOKEN'):
+        logger.info("Adding token to the headers")
+        headers["Authorization"] = "token {}".format(os.environ.get('GITHUB_TOKEN'))
+
+    repo_config = config.get('repo').get('config')
+    r = requests.get('https://api.github.com/repos/{owner}/{repo}/contents/'.format(**repo_config), headers=headers)
+    if r.status_code == 200:
+        for f in r.json():
+            logger.info("Looking at: {} in: {}".format(f.get('name'), uid))
+            if f.get('type') == 'dir':
+                directory_name = f.get('name')
+                r = requests.get(
+                    "https://raw.githubusercontent.com/{owner}/{repo}/master/{directory_name}/README.md".format(
+                        **repo_config, directory_name=directory_name
+                    )
+                )
+                if r.status_code == 200:
+                    logger.info("looking in README.md")
+                    pos = r.text.lower().find(what.lower())
+                    if pos > -1:
+                        results.append([uid, directory_name, r.text])
+                else:
+                    raise Exception(r.text)
+
+            if what.lower() in f.get('name').lower():
+                click.echo("{} matches in filename: {}".format(uid, f.get('name')))
+    else:
+        raise Exception(r.json().get('message'))
 
 
 @cli.command()
@@ -114,6 +132,7 @@ def grab_from_github(owner_and_repo, directory, path):
         path,
         '--force',
     ])
+
 
 if __name__ == "__main__":
     cli()
